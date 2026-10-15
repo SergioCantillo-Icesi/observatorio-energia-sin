@@ -1,11 +1,12 @@
 """
-data/_pydataxm_patch.py — Parche quirúrgico a un bug real de la librería
-`pydataxm` (no relacionado con versiones de NumPy/pandas específicas,
-aunque el síntoma se vea así).
+data/_pydataxm_patch.py — Parche quirúrgico a DOS bugs reales de la
+librería `pydataxm` (ninguno relacionado con versiones de NumPy/pandas
+específicas, aunque el primer síntoma se vea así).
 
-BUG: en `ReadDB.request_data()`, la librería construye `start_periods`
-como un `pandas.DatetimeIndex` (resultado de `.map()` sobre otro Index) y
-luego intenta mutar su array interno directamente:
+BUG 1 — mutación de un Index inmutable: en `ReadDB.request_data()`, la
+librería construye `start_periods` como un `pandas.DatetimeIndex`
+(resultado de `.map()` sobre otro Index) y luego intenta mutar su array
+interno directamente:
 
     start_periods.values[0] = pd.Timestamp(start_date)
 
@@ -14,13 +15,24 @@ devolver una vista de solo lectura de su array interno. Mutarla en el
 sitio nunca fue realmente seguro; simplemente pandas se ha vuelto más
 estricto verificándolo. Por eso NI actualizar pydataxm NI bajar NumPy
 arregla esto — el problema es de lógica, no de versión.
+FIX: se construye un array de NumPy escribible (`.copy()`) antes de mutar
+el primer elemento, y se reconstruye el Index a partir de ese array.
+
+BUG 2 — nest_asyncio pisa el event loop del servidor: pydataxm hace
+`loop = asyncio.get_event_loop(); loop.run_until_complete(...)` (con
+nest_asyncio parchando el loop para permitir anidarlo). Funciona en un
+script/notebook local, pero confirmado roto en Streamlit Community Cloud
+(servidor ASGI/Uvicorn, que YA tiene un loop corriendo): pisa el
+seguimiento interno de tasks que usa aiohttp y tira `RuntimeError: Timeout
+context manager should be used inside a task`.
+FIX: `_run_coro_aislado()` corre esa misma llamada en un hilo nuevo con su
+propio event loop (`asyncio.run()`), sin tocar ni depender del loop del
+servidor — ver su docstring para más detalle.
 
 PARCHE: se reemplaza `ReadDB.request_data` completo por una copia idéntica
 del original (confirmado contra el código fuente real en
 https://raw.githubusercontent.com/EquipoAnaliticaXM/API_XM/master/pydataxm/pydataxm.py)
-con SOLO esa línea corregida: se construye un array de NumPy escribible
-(`.copy()`) antes de mutar el primer elemento, y se reconstruye el Index
-a partir de ese array.
+con SOLO esas dos partes corregidas.
 
 USO: importar y llamar `aplicar_parche()` UNA VEZ, antes de crear
 cualquier instancia de `ReadDB()` — tanto en reservas_xm.py como en
@@ -30,12 +42,34 @@ de fetch, así que normalmente no necesitas llamarlo a mano.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import json
 
 import pandas as pd
 import requests
 
 _PARCHE_APLICADO = False
+
+
+def _run_coro_aislado(coro):
+    """Corre una corutina en un HILO NUEVO con su propio event loop
+    aislado (vía asyncio.run()), en vez de reusar `asyncio.get_event_loop()`
+    + nest_asyncio (lo que hacía pydataxm originalmente).
+
+    Por qué hace falta: en un script/notebook local no hay drama en
+    reusar/anidar el loop "actual". Pero quien llama a este código desde
+    un servidor ASGI (como el que usa Streamlit, Uvicorn por debajo) YA
+    tiene un event loop corriendo, y nest_asyncio pisa su seguimiento
+    interno de tasks — confirmado en Streamlit Community Cloud:
+    `RuntimeError: Timeout context manager should be used inside a task`
+    dentro de aiohttp, al anidar el loop así. Un hilo nuevo con
+    asyncio.run() no comparte nada con el loop del servidor, así que no
+    hay con qué chocar — funciona igual en local y en la nube, sin
+    importar qué versión de Python/Streamlit/aiohttp termine resolviendo
+    el entorno de despliegue."""
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(asyncio.run, coro)
+        return future.result()
 
 
 def _request_data_parcheado(self, coleccion, metrica, start_date, end_date, filtros=None):
@@ -103,8 +137,7 @@ def _request_data_parcheado(self, coleccion, metrica, start_date, end_date, filt
             temp_body['EndDate'] = _end
             list_bodies.append(temp_body)
 
-        loop = asyncio.get_event_loop()
-        data = loop.run_until_complete(self.run_async(list_bodies, endpoint))
+        data = _run_coro_aislado(self.run_async(list_bodies, endpoint))
 
     elif self.inventario_metricas.query(
             "MetricId == @coleccion and Entity == @metrica").Type.values == 'ListsEntities':
