@@ -33,6 +33,16 @@ aplicar_parche()  # corrige bug real de ReadDB.request_data (ver docstring del p
 CACHE_DIR = Path(".cache/reservas")
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
+# Semilla commiteada al repo con el histórico completo (2000-presente) ya
+# descargado — `.cache/` está en .gitignore a propósito (es caché, no
+# fuente), pero eso significa que un contenedor recién levantado (cada
+# redeploy de Streamlit Cloud) arranca sin nada ahí. Sin esta semilla, la
+# primera carga tendría que pedirle a la API ~26 años en ventanas de 30
+# días (~300+ llamadas secuenciales) — confirmado que esto causaba timeout
+# real en Streamlit Cloud ("Received no response from server"). Con la
+# semilla, solo hace falta pedir los días nuevos desde su última fecha.
+RESERVAS_PCT_SEED = Path(__file__).parent / "reservas_pct_seed.parquet"
+
 
 # --- Nombres REALES confirmados contra el catálogo en vivo (ver diagnóstico) ---
 # XM ya publica el % de reservas como métrica propia: no hace falta dividir
@@ -162,6 +172,8 @@ def _load_cache(name: str) -> pd.DataFrame:
     path = CACHE_DIR / f"{name}.parquet"
     if path.exists():
         return pd.read_parquet(path)
+    if name == "pct_reservas_sistema" and RESERVAS_PCT_SEED.exists():
+        return pd.read_parquet(RESERVAS_PCT_SEED)
     return pd.DataFrame(columns=["Date", "Value"])
 
 

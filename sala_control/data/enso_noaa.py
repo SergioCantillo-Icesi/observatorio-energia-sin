@@ -272,24 +272,31 @@ def fetch_strength_probabilities_live(url: str = "https://cpc.ncep.noaa.gov/prod
     return None
 
 
-def load_strength_table(prefer_live: bool = True, use_playwright: bool = True,
+def load_strength_table(prefer_live: bool = True, use_playwright: bool = False,
                          seed_path: Path = SEED_STRENGTH_TABLE) -> pd.DataFrame:
-    """Punto de entrada único. Orden de intento:
-      1. Caché de un scrape con Playwright reciente (<24h), si existe.
-      2. Scraper con Playwright (navegador real) — confirmado en vivo que
-         funciona, aunque es más lento que el fetch directo de abajo.
-      3. Fetch rápido por requests + pandas.read_html — confirmado en vivo
-         (2026-08-20) que la tabla es HTML estático normal y esto también
-         funciona solo; se mantiene después de Playwright en el orden por
-         ahora, no antes, para no reordenar el flujo sin necesidad.
-      4. Semilla manual (enso_strength_table_seed.csv) — última red de
+    """Punto de entrada único. Orden de intento (default `use_playwright=False`):
+      1. Fetch rápido por requests + pandas.read_html — confirmado en vivo
+         (2026-08-20) que la tabla es HTML estático normal, sin JS, así
+         que esto solo ya trae el dato real.
+      2. Semilla manual (enso_strength_table_seed.csv) — última red de
          seguridad; nunca deja al pipeline sin datos.
 
+    Playwright (`use_playwright=True`) queda disponible pero DESACTIVADO
+    por default: confirmado que en Streamlit Community Cloud nadie corre
+    `playwright install chromium`, así que el navegador no está — el
+    intento tarda hasta ~90s en fallar (3 URLs × 30s de timeout) antes de
+    caer al fetch liviano, y eso fue justo lo que causaba que la página
+    de Riesgo Climático-Hidrológico se quedara "cargando y cargando" hasta
+    que Streamlit Cloud cortaba la conexión. Como el fetch liviano ya trae
+    el mismo dato real, Playwright pasó a ser solo una herramienta de
+    diagnóstico manual (`scripts/test_6_playwright_noaa.py`) para cuando
+    NOAA cambie la página y haga falta investigar con un navegador real.
+
     LA SEMILLA SE DESACTUALIZA. NOAA publica esta tabla junto con el ENSO
-    Diagnostic Discussion, el 2º jueves de cada mes. Si por algún motivo
-    Playwright deja de funcionar (NOAA cambia la página), el proceso
-    mantenible de emergencia es: entrar a la página una vez al mes, copiar
-    la tabla a mano a enso_strength_table_seed.csv (mismo formato), y listo.
+    Diagnostic Discussion, el 2º jueves de cada mes. Si el fetch liviano
+    deja de funcionar (NOAA cambia la página), el proceso mantenible de
+    emergencia es: entrar a la página una vez al mes, copiar la tabla a
+    mano a enso_strength_table_seed.csv (mismo formato), y listo.
     """
     if prefer_live and use_playwright:
         from sala_control.data.enso_scraper_playwright import (
