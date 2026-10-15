@@ -42,8 +42,9 @@ de fetch, así que normalmente no necesitas llamarlo a mano.
 from __future__ import annotations
 
 import asyncio
-import concurrent.futures
 import json
+import queue
+import threading
 
 import pandas as pd
 import requests
@@ -62,14 +63,35 @@ def _run_coro_aislado(coro):
     tiene un event loop corriendo, y nest_asyncio pisa su seguimiento
     interno de tasks — confirmado en Streamlit Community Cloud:
     `RuntimeError: Timeout context manager should be used inside a task`
-    dentro de aiohttp, al anidar el loop así. Un hilo nuevo con
-    asyncio.run() no comparte nada con el loop del servidor, así que no
-    hay con qué chocar — funciona igual en local y en la nube, sin
-    importar qué versión de Python/Streamlit/aiohttp termine resolviendo
-    el entorno de despliegue."""
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(asyncio.run, coro)
-        return future.result()
+    dentro de aiohttp, al anidar el loop así.
+
+    OJO con `concurrent.futures.ThreadPoolExecutor`: su `.submit()` copia
+    el `contextvars.Context` del hilo que llama (vía `copy_context()`) y
+    lo "entra" en el hilo nuevo — pero en el runtime de Streamlit ese
+    contexto YA está entrado (el propio `anyio` corre el script ahí
+    dentro), así que entrar una copia desde otro hilo choca: confirmado
+    en vivo `RuntimeError: cannot enter context: ... is already entered`,
+    con una cascada de errores de bookkeeping interno de asyncio detrás.
+    `threading.Thread` NO copia/hereda contexto del hilo llamador (el
+    hilo nuevo arranca con uno propio, vacío) — por eso se usa acá en vez
+    de ThreadPoolExecutor, para no repetir el mismo problema por otro
+    lado."""
+    result: queue.Queue = queue.Queue(maxsize=1)
+
+    def _worker() -> None:
+        try:
+            result.put(("ok", asyncio.run(coro)))
+        except BaseException as exc:  # noqa: BLE001 — se re-lanza tal cual abajo
+            result.put(("error", exc))
+
+    hilo = threading.Thread(target=_worker, daemon=True)
+    hilo.start()
+    hilo.join()
+
+    status, value = result.get()
+    if status == "error":
+        raise value
+    return value
 
 
 def _request_data_parcheado(self, coleccion, metrica, start_date, end_date, filtros=None):
