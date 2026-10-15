@@ -1,0 +1,15 @@
+# Entorno virtual
+.venv/
+
+# Caché local de datos (se regenera solo en cada corrida)
+.cache/
+
+# Python
+__pycache__/
+*.pyc
+
+# Secretos de Streamlit (si algún día hace falta uno — hoy la app no usa credenciales)
+.streamlit/secrets.toml
+
+# Snapshot viejo de pruebas, de antes de mover scripts/ — ver README
+sala_control_pruebas_windows.zip

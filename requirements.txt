@@ -1,0 +1,10 @@
+pydataxm>=0.3.14
+plotly
+streamlit
+pyarrow
+pandas<3.0
+lxml
+requests
+playwright
+html5lib
+beautifulsoup4
